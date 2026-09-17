@@ -1,0 +1,21 @@
+.vscode
+
+# Python
+
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+
+.venv/
+venv*/
+
+# Local secrets / configuration
+
+.env
+.env.*
+
+# macOS
+
+.DS_Store
+app/static/fonts/

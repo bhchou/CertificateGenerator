@@ -1,0 +1,617 @@
+# Participation Certificate Generator
+
+> English version: [README_EN.md](README_EN.md)
+
+一套以**資料最小化（Data Minimisation）**為原則設計的活動參與證明核發與驗證服務。
+
+系統使用 Ed25519
+數位簽章核發可驗證的參與證明；參與者姓名、證照會員編號、Google Meet
+顯示名稱等資料只在瀏覽器端處理，後端資料庫不保存這些可直接識別參與者的欄位。
+
+## 專案狀態
+
+**Certificate Signing Protocol：v1 --- FROZEN**
+
+v1 已於 2026-09-17 完成 production path 的 Happy Path、Negative
+Path、撤銷、授權與主要安全邊界測試，正式凍結。
+
+以下內容若有不相容變更，必須提升 protocol version，不得在 v1
+名義下靜默修改：
+
+-   canonicalization 規則
+-   participant hash preimage
+-   signed message 結構與欄位順序
+-   serialization 規則
+-   signature algorithm
+-   signature wire encoding
+-   會改變驗證語意的 trust model
+
+UI/CSS、PDF 排版、Event metadata 呈現、部署 hardening
+與營運工具可以繼續演進，只要不改變 v1 的簽章語意。
+
+## 架構
+
+``` text
+參與者瀏覽器
+  │
+  ├─ participant_name
+  ├─ certification_member_id
+  └─ meet_display_name
+          │
+          ▼
+  Canonicalize + SHA-256
+          │
+          │ 僅傳 event_id + participant_hash
+          ▼
+Public HTTPS / Traefik / Coraza WAF
+          │
+          ▼
+FastAPI certificate-generator
+          │
+          ├─ Ed25519 signing key ← Kubernetes Secret
+          │
+          └─ PostgreSQL ← ClusterIP only
+                              │
+                              └─ Adminer 僅由 Tailnet 存取
+```
+
+參與者資料處理與 PDF 產生均在 client-side 完成。
+
+## Certificate Signing Protocol v1
+
+### Participant canonicalization
+
+每個 participant field 分別執行：
+
+1.  Unicode NFKC normalization。
+2.  移除前後 Unicode whitespace。
+3.  連續 Unicode whitespace 合併為單一 ASCII space（`U+0020`）。
+4.  不執行 lowercase、uppercase 或 case folding。
+
+欄位：
+
+-   `participant_name`
+-   `certification_member_id`
+-   `meet_display_name`
+
+### Participant hash
+
+精確 UTF-8 preimage：
+
+``` text
+PCG-PARTICIPANT-V1
+event_id=<event_id>
+participant_name=<canonical participant_name>
+certification_member_id=<canonical certification_member_id>
+meet_display_name=<canonical meet_display_name>
+```
+
+Serialization 規則：
+
+-   UTF-8
+-   僅使用 LF (`\n`)
+-   欄位順序固定
+-   最後不得有 trailing LF
+
+以上內容使用 SHA-256 計算。
+
+Wire representation：
+
+``` text
+sha256:<64 lowercase hexadecimal characters>
+```
+
+`event_id` 刻意納入 hash preimage，因此同一參與者在不同活動會產生不同
+hash，以降低跨活動關聯（cross-event correlation）的可能性。
+
+### Signed certificate message
+
+精確簽章內容：
+
+``` text
+PCG-CERTIFICATE-V1
+version=1
+certificate_id=<certificate_id>
+event_id=<event_id>
+participant_hash=<participant_hash>
+issued_at=<issued_at>
+key_id=<key_id>
+```
+
+Serialization 規則：
+
+-   UTF-8
+-   僅使用 LF
+-   欄位順序固定
+-   最後不得有 trailing LF
+
+以上 message **直接使用 Ed25519 簽章**，不得先自行 SHA-256 pre-hash
+後再交給 Ed25519。
+
+Signature wire encoding：
+
+-   Base64URL
+-   不含 `=` padding
+
+`key_id` 僅用於選擇 trusted key，不是 trust source。
+
+## Identifier 與時間格式
+
+``` text
+event_id:
+^evt_[a-z0-9_-]{3,64}$
+
+certificate_id:
+^cert_[0-9A-HJKMNP-TV-Z]{26}$
+```
+
+Certificate ID 使用 CSPRNG 產生 128-bit random value，再以 Crockford
+Base32 編碼。
+
+`issued_at` 使用 UTC RFC3339、秒精度、不含 milliseconds。
+
+## 證書核發 API
+
+``` http
+POST /api/v1/certificates
+Authorization: Bearer <issuance-token>
+Content-Type: application/json
+```
+
+Request：
+
+``` json
+{
+  "event_id": "evt_...",
+  "participant_hash": "sha256:..."
+}
+```
+
+後端不需要也不應接收：
+
+-   participant name
+-   certification member ID
+-   Meet display name
+-   email
+
+### Issuance authorization
+
+申請連結使用 opaque bearer token。
+
+Backend 強制檢查：
+
+-   token 是否有效
+-   token status
+-   token 與 event 是否綁定
+-   issuance validity window
+
+資料庫不保存 raw issuance token，只保存 token hash。
+
+授權控制由 backend 執行；frontend 的限制僅屬 UX control，不是 security
+boundary。
+
+## Idempotency
+
+Certificate registry 使用：
+
+``` sql
+UNIQUE (event_id, participant_hash)
+```
+
+同一活動、同一 canonical participant identity 重複申請時，回傳同一張
+certificate，不重複核發。
+
+## 驗證與 Trust Model
+
+驗證分成兩個互相獨立的控制。
+
+### 1. Cryptographic verification
+
+Verifier：
+
+1.  依 protocol v1 重建 signed message。
+2.  依 `key_id` 選擇內建 trusted public key。
+3.  執行 Ed25519 signature verification。
+
+QR payload 不提供 authoritative public key。
+
+### 2. Registry verification
+
+Verifier 同時向線上 certificate registry 確認：
+
+-   certificate 是否存在
+-   registry metadata 是否一致
+-   certificate status
+-   revocation state
+
+因此：
+
+``` text
+Cryptographic Signature = VALID
+```
+
+只代表資料確實由可信 signing key 簽發；若 registry 已將該 certificate
+撤銷，證書仍不得視為有效。
+
+Verification URL 將 signed certificate data 放在 URL fragment 中。
+
+## Certificate Revocation
+
+Registry 至少支援：
+
+-   `valid`
+-   `revoked`
+
+撤銷資料可包含：
+
+-   `revoked_at`
+-   revocation reason
+
+證書撤銷後，原始 PDF 與 QR 不需要重新產生或收回。
+
+原始 signed payload 的歷史數位簽章仍可能是 VALID，但線上 registry
+verification 會回報：
+
+``` text
+CERTIFICATE REVOKED
+```
+
+## Event Metadata
+
+Event metadata 以 signed `event_id` 對應的 event registry 為
+authoritative source。
+
+典型資料包括：
+
+-   title
+-   description
+-   starts_at / ends_at
+-   speaker
+-   domain
+-   issuer
+-   CPE hours
+-   issuance_start / issuance_end
+-   status
+
+建議：
+
+-   **Title**：短且穩定的活動／課程名稱
+-   **Description**：可選的副標題或課程說明
+
+例如：
+
+``` text
+Title:
+Kubernetes 入門（一）
+
+Description:
+從機房到 Kubernetes—建立第一個可運作的 Workload
+```
+
+## Privacy Design
+
+參與者 PII 僅在參與者瀏覽器內處理。
+
+Backend/database 不刻意保存：
+
+-   participant name
+-   certification member ID
+-   Meet display name
+-   participant email
+
+Registry 僅保存 event-scoped SHA-256 `participant_hash`。
+
+### 資料保護分類
+
+`participant_hash` 應視為 **pseudonymised
+data（假名化資料）**，不得直接假設為 anonymous data。
+
+本設計透過不傳輸、不保存原始 participant identity fields 來落實 data
+minimisation；將 `event_id` 納入 hash 亦可降低不同活動間的資料關聯能力。
+
+本文件記錄的是技術控制與設計考量，**不代表已取得第三方認證，也不宣稱已取得台灣個人資料保護法、GDPR
+或其他法規的合規認證。**
+
+## Signing Key Security
+
+Ed25519 signing private key：
+
+-   不存在 Git tracked files。
+-   不存在 application filesystem。
+-   Runtime 由 Kubernetes Secret `certificate-signing-key` 注入。
+-   Deployment 使用 `secretKeyRef` 引用。
+-   Workload ServiceAccount 無權透過 Kubernetes API 讀取 signing
+    Secret。
+
+Production workload 設定：
+
+``` yaml
+automountServiceAccountToken: false
+```
+
+因此不會把不必要的 Kubernetes API credential 自動掛入 application Pod。
+
+Signing Secret 包含：
+
+-   `KEY_ID`
+-   `PRIVATE_KEY_B64`
+-   `PUBLIC_KEY_B64`
+
+其中只有 private key 屬於機密資料。
+
+### Residual Risk
+
+具有足夠 Kubernetes 管理權限、Secret 權限、workload 修改權限或 Pod exec
+權限的管理者，仍可能取得 runtime secret material。
+
+若未來需要更高 assurance，可將 private-key custody/signing 移至 OCI
+Vault/KMS 或其他 managed signing facility。
+
+這不是 protocol v1 的 blocker。
+
+## Database Credential Security
+
+Database credential 由另一個獨立 Kubernetes Secret 提供：
+
+``` text
+certificate-db
+```
+
+Git repository 只保存 Secret reference，不保存 DB credential material。
+
+Signing key 與 database credential 分開管理。
+
+## Network Exposure
+
+``` text
+Internet
+   │
+   ▼
+Traefik + Coraza WAF
+   │
+   ▼
+certificate-generator
+   │
+   └─ PostgreSQL
+        Service type: ClusterIP
+        External IP: none
+```
+
+PostgreSQL 不透過 LoadBalancer 或 NodePort 對外公開。
+
+Adminer 管理介面透過 Tailscale/Tailnet 私有存取，不經 public application
+ingress。
+
+## API Documentation
+
+Production 採 secure-by-default。
+
+`ENABLE_API_DOCS` 未設定或為 false 時：
+
+``` text
+/docs         → HTTP 404
+/openapi.json → HTTP 404
+```
+
+只有明確設定 `ENABLE_API_DOCS=true` 才開啟 API documentation。
+
+關閉 Swagger/OpenAPI 屬於 attack-surface reduction，**不是 authorization
+control**。
+
+## Error Handling
+
+Production Negative Path 測試中，已確認測試過的錯誤回應沒有暴露：
+
+-   Python stack trace
+-   filesystem path
+-   SQL statement
+-   database implementation detail
+-   environment variable
+-   secret value
+
+FastAPI/Pydantic validation response 可能回顯 invalid request value。
+
+v1 接受此行為，因為 certificate issuance API 刻意只接收 `event_id` 與
+`participant_hash`；若未來 API 開始接受 sensitive
+fields，應重新評估並考慮自訂 validation exception handler。
+
+## Security / Functional Closing Evidence
+
+以下測試已在 protocol v1 freeze 前，以 production path 實際完成。
+
+  -----------------------------------------------------------------------
+  測試                                結果
+  ----------------------------------- -----------------------------------
+  Issuance window 開始前申請          PASS --- HTTP 403
+
+  Invalid issuance token              PASS --- HTTP 403
+
+  Valid token 搭配其他 event          PASS --- HTTP 403
+
+  Issuance window 開啟後申請          PASS
+
+  Certificate issuance                PASS
+
+  Client-side PDF generation          PASS
+
+  原始 QR verification                PASS --- VALID
+
+  Malformed verification fragment     PASS --- rejected
+
+  修改 signed payload、signature 不變 PASS --- Cryptographic Signature
+                                      INVALID
+
+  不存在的 certificate ID             PASS --- HTTP 404
+
+  Revoked certificate                 PASS --- CERTIFICATE REVOKED
+
+  同 event + 同 participant hash      PASS --- 回傳同一 certificate
+
+  Workload SA 嘗試讀 signing Secret   PASS --- RBAC denied
+
+  ServiceAccount token automount      PASS --- disabled
+
+  `/health`                           PASS --- HTTP 200
+
+  `/health/db`                        PASS --- HTTP 200
+
+  `/docs`                             PASS --- HTTP 404
+
+  `/openapi.json`                     PASS --- HTTP 404
+
+  PostgreSQL public exposure          PASS --- ClusterIP only
+  -----------------------------------------------------------------------
+
+其中 issuance window 邊界曾以同一 Event/token 實測：
+
+``` text
+window 開啟前
+→ frontend 不開放申請
+→ 直接 bypass frontend 呼叫 issuance API
+→ backend HTTP 403
+
+window 開啟後
+→ 同一 application URL 可正常申請
+→ certificate issuance
+→ PDF
+→ QR
+→ online verification VALID
+```
+
+## Certificate Notice
+
+Certificate 明確聲明：
+
+-   participant information 為申請者自行提供；
+-   certificate 僅證明所載活動之參與紀錄；
+-   不代表 issuer 已驗證 participant identity、qualification 或其他
+    personal information。
+
+此聲明也是整體 trust model 與責任邊界的一部分。
+
+## Event Create Authorization --- Planned
+
+Event Create 不計畫建立需要長期維護的帳號、password、session 系統。
+
+目前偏好的 minimal-entropy 設計是短期 opaque **Create Token**。
+
+預計特性：
+
+-   256-bit CSPRNG opaque bearer token
+-   預設有效 7 天
+-   有效期間內可重複使用
+-   可建立多個 Event
+-   Server 僅保存 SHA-256 token hash
+-   支援 revoke
+-   與 certificate issuance token 為不同 capability
+-   Event creation 必須由 backend 做 server-side authorization
+-   可增加非 security identity 的 label，方便營運追蹤
+
+持有 Create Token 即代表在有效期間具有 Event Create
+capability；這是刻意接受的 bearer-capability trade-off。
+
+除非營運需求改變，否則不建立 Web account/password/session system。
+
+## Event Application QR --- Planned
+
+Event Create 成功後預計提供：
+
+-   Application URL
+-   Copy URL
+-   相同 Application URL 的 QR Code
+-   Download QR Code PNG
+
+講者可直接下載 PNG 插入 PowerPoint、Keynote、HackMD
+等簡報，不建議使用螢幕截圖。
+
+QR 本質上是 issuance bearer URL 的另一種表示，因此應視為 capability
+material；實際風險由 backend 的 event binding 與 issuance validity
+window 限制。
+
+## Deployment
+
+目前主要 stack：
+
+-   FastAPI
+-   PostgreSQL
+-   Alembic
+-   Kubernetes / OCI OKE
+-   Traefik
+-   Coraza WAF
+-   Argo CD / GitOps
+-   GitLab CI
+-   Python `cryptography` / Ed25519
+
+Production application image 使用明確 version tag，不使用 `latest`。
+
+## Operational Handover Checklist
+
+移交、復原或重新部署時，至少確認：
+
+1.  PostgreSQL 正常，且沒有 public exposure。
+2.  `certificate-db` 存在於 Git 之外，DB credential 正確。
+3.  `certificate-signing-key` 存在於 Git 之外，且 `KEY_ID` 正確。
+4.  Signing private key 未進入 source control 或 application
+    image/filesystem。
+5.  Verifier trust store 具有 active `key_id` 對應的 trusted public
+    key。
+6.  `automountServiceAccountToken` 維持 `false`。
+7.  `/docs` 與 `/openapi.json` 預設維持關閉。
+8.  Issuance token expiry 與 event binding 持續由 backend enforcement。
+9.  Online verification 持續檢查 revocation。
+10. 維護 registry/event data 的 backup/restore
+    procedure，並定期驗證可復原性。
+
+## Protocol Freeze Rule
+
+**PCG Certificate Signing Protocol v1 已凍結。**
+
+以下修改必須進行 protocol-version review，通常需要升版：
+
+-   canonicalization 規則
+-   participant-hash preimage
+-   signed-message fields
+-   signed-message field order
+-   serialization / newline 規則
+-   signature algorithm
+-   signature encoding
+-   改變 verification semantics 的 trust-model 修改
+
+以下內容可在不改 protocol version 的情況下繼續演進：
+
+-   UI / CSS
+-   frontend refactor
+-   PDF layout
+-   Event metadata presentation
+-   Event Create authorization
+-   QR download
+-   deployment hardening
+-   CI/CD
+-   SAST
+-   operational tooling
+
+前提是不得改變 protocol-v1 signed semantics。
+
+## TODO
+
+Post-v1 預計工作：
+
+-   實作短期、可重複使用的 Event Create Token authorization。
+-   Event Create 完成頁提供 downloadable application QR PNG。
+-   將 SAST 納入 GitLab CI loop。
+-   若建立 persistent test environment，明確自動化 production/test
+    signing-key separation。
+-   建立 backup/restore runbook，並定期執行 restoration test。
+-   若 signing-key assurance requirement 提高，評估 OCI Vault/KMS。
+
+PDF 視覺美化屬 optional，不是 protocol-v1 closing requirement。
+
+------------------------------------------------------------------------
+
+**Protocol:** PCG Certificate Signing Protocol v1\
+**State:** FROZEN\
+**Freeze Date:** 2026-09-17
+
+## License
+本 repository 內的原始碼採用 [MIT License](LICENSE) 授權。
+除非另有明確說明，本授權不涵蓋 repository 外的課程教材、簡報、商標、Logo 或其他內容。

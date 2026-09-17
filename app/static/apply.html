@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Participation Certificate</title>
+  <link rel="stylesheet" href="/static/css/apply.css">
+  <script src="/static/vendor/qrcode.min.js"></script>
+  <script src="/static/vendor/jspdf.umd.min.js"></script>
+</head>
+
+<body>
+
+<h1>參與證明申請</h1>
+<div style="margin-top:-8px; margin-bottom:24px; color:#666;">
+  Participation Certificate
+</div>
+<div id="loading">正在載入活動資料… / Loading event...</div>
+<div id="load-error" class="error"></div>
+<div id="content" style="display:none">
+
+  <div class="event">
+    <h2 id="title"></h2>
+    <div id="event-info"></div>
+  </div>
+
+  <form id="apply-form">
+    <label for="participant-name">
+      姓名 / Participant Name
+    </label>
+    <input
+      id="participant-name"
+      type="text"
+      required
+      autocomplete="name"
+    >
+
+    <label for="certification-member-id">
+      證照會員編號(選填) / Certification Member ID(Optional)
+    </label>
+    <input
+      id="certification-member-id"
+      type="text"
+    >
+
+    <label for="meet-display-name">
+      Google Meet 顯示名稱 / Google Meet Display Name
+    </label>
+    <input
+      id="meet-display-name"
+      type="text"
+      required
+    >
+    <div style="margin-top:6px; font-size:0.85em; color:#666;">
+      請填寫參與本活動時使用的 Google Meet 顯示名稱，供必要時核對參與紀錄。<br>
+      Please enter the Google Meet display name used during this event
+      for attendance verification if required.
+    </div>
+    <button type="submit">
+      產生參與證明 / Generate Certificate
+    </button>
+
+  </form>
+
+  <div id="confirm-section" style="display:none">
+
+    <h2>確認申請資料</h2>
+    <div style="color:#666; margin-bottom:20px;">
+      Confirm Application Information
+    </div>
+
+    <div class="event">
+      <div>
+        <strong>姓名 / Participant Name：</strong>
+        <span id="confirm-participant-name"></span>
+      </div>
+
+      <div>
+        <strong>證照會員編號 / Certification Member ID：</strong>
+        <span id="confirm-member-id"></span>
+      </div>
+
+      <div>
+        <strong>Google Meet 顯示名稱 / Display Name：</strong>
+        <span id="confirm-meet-name"></span>
+      </div>
+    </div>
+  
+
+    <div style="
+      margin-top:20px;
+      padding:16px;
+      border:1px solid #d0a000;
+      border-radius:8px;
+      background:#fffbea;
+    ">
+      <strong>請確認以上資料正確無誤</strong><br>
+      <span style="font-size:0.9em;">
+        Please confirm that the information above is correct.
+      </span>
+
+      <p>
+        證書核發後，為維護證書紀錄與驗證資料的一致性，
+        已核發內容無法直接修改。如發現資料有誤，
+        請聯絡核發單位撤銷原證書後，再重新申請核發。
+      </p>
+
+      <p style="font-size:0.9em; color:#666;">
+        Once issued, certificate information cannot be directly modified
+        in order to preserve the integrity and consistency of the certificate
+        record. If any information is incorrect, please contact the issuer
+        to revoke the original certificate before requesting a new one.
+      </p>
+    </div>
+
+    <button type="button" id="edit-application">
+      返回修改 / Edit Information
+    </button>
+
+    <button type="button" id="confirm-issue">
+      確認並核發證書 / Confirm &amp; Issue Certificate
+    </button>
+
+  </div>
+
+  <div id="error" class="error"></div>
+
+  <div id="success-section" style="display:none">
+    <div class="success-card">
+      <h2>證書核發完成</h2>
+      <div class="success-subtitle">
+        Certificate Issued Successfully
+      </div>
+
+      <p>
+        您的參與證明已成功核發。請下載 PDF 證書並妥善保存。
+      </p>
+      <p class="secondary-text">
+        Your Certificate of Participation has been issued successfully.
+        Please download and retain the PDF certificate.
+      </p>
+
+      <div class="success-info">
+        <div>
+          <strong>課程名稱 / Course Title</strong>
+          <div id="success-course-title"></div>
+        </div>
+
+        <div>
+          <strong>姓名 / Participant Name</strong>
+          <div id="success-participant-name"></div>
+        </div>
+
+        <div>
+          <strong>證書編號 / Certificate ID</strong>
+          <div id="success-certificate-id"></div>
+        </div>
+
+        <div>
+          <strong>核發時間 / Issued At</strong>
+          <div id="success-issued-at"></div>
+        </div>
+      </div>
+
+      <div id="verificationQr"></div>
+      <div>
+        <a id="verificationLink"
+          href="#"
+          target="_blank"
+          rel="noopener">
+          驗證此證書 / Verify Certificate
+        </a>
+      </div>
+      <div class="success-actions">
+        <button type="button" id="download-pdf">
+          下載 PDF 證書 / Download PDF
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="/static/js/apply.js" defer></script>
+</body>
+</html>

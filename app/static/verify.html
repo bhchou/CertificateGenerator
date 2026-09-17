@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Certificate Verification</title>
+  <link rel="stylesheet" href="/static/css/verify.css">
+</head>
+
+<body>
+  <h1>證書驗證</h1>
+  <p class="subtitle">Certificate Verification</p>
+  <div id="status" class="status">
+    驗證中... / Verifying...
+  </div>
+
+  <div id="details" hidden>
+    <dl>
+      <dt>課程名稱 / Course Title</dt>
+        <dd id="courseTitle"></dd>
+      <dt>專業領域 / Domain</dt>
+        <dd id="domain"></dd>
+      <dt>講師 / Speaker</dt>
+        <dd id="speaker"></dd>
+      <dt>活動日期 / Event Date</dt>
+        <dd id="eventDate"></dd>
+      <dt>CPE 時數 / CPE Hours</dt>
+        <dd id="cpeHours"></dd>
+      <dt>核發單位 / Issuer</dt>
+        <dd id="issuer"></dd>
+      <dt>證書編號 / Certificate ID</dt>
+        <dd><code id="certificateId"></code></dd>
+      <dt>核發時間 / Issued At</dt>
+        <dd id="issuedAt"></dd>
+    </dl>
+    <div id="revocationDetails" hidden>
+      <h2>
+        此證書已撤銷
+        <span>CERTIFICATE REVOKED</span>
+      </h2>
+      <dl>
+        <dt>撤銷時間 / Revoked At</dt>
+          <dd id="revokedAt"></dd>
+        <dt>撤銷原因 / Revocation Reason</dt>
+          <dd id="revocationReason"></dd>
+      </dl>
+    </div>
+  </div>
+
+  <p class="note">
+    本頁驗證證書的數位簽章、核發紀錄及撤銷狀態。<br>
+    This page verifies the certificate's digital signature,
+    registry record, and revocation status.
+  </p>
+<script src="/static/js/verify.js" defer></script>
+</body>
+</html>
